@@ -1,0 +1,13 @@
+format_version = 2
+
+[apps.CliBuddy]
+identifier = "com.cli-buddy.app"
+product = "CliBuddy"
+version = "0.0.1"
+category = "public.app-category.developer-tools"
+icon = "Resources/AppIcon.icns"
+
+[apps.CliBuddy.plist]
+LSUIElement = true
+LSMinimumSystemVersion = "15.0"
+NSHighResolutionCapable = true

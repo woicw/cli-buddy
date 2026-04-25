@@ -1,0 +1,13 @@
+{
+  "name": "cli-buddy",
+  "version": "0.1.0",
+  "description": "macOS desktop pixel pet that mirrors your Claude Code / Codex sessions",
+  "scripts": {
+    "build": "bash scripts/build.sh",
+    "test": "swift test"
+  },
+  "keywords": ["claude-code", "codex", "desktop-pet", "macos"],
+  "author": "",
+  "license": "ISC",
+  "packageManager": "pnpm@10.17.0"
+}

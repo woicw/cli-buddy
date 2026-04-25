@@ -1,0 +1,26 @@
+# macOS
+.DS_Store
+
+# Swift Package Manager
+.build/
+.swiftpm/
+Packages/
+Package.resolved
+
+# Bundler output
+.bundler/
+*.app
+/CliBuddy.zip
+
+# Node (for package.json scripts)
+node_modules/
+
+# cli-buddy runtime
+/tmp/cli-buddy.sock
+
+.omc/
+
+# Icon generation intermediates — keep Resources/AppIcon.icns, drop scratch
+Resources/AppIcon.iconset/
+.omx/
+docs/
