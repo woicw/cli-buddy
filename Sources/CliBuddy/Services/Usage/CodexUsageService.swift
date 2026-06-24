@@ -6,53 +6,61 @@ private let logger = Logger(subsystem: "com.cli-buddy", category: "CodexUsage")
 /// Scans Codex rollout JSONL files for per-session token totals.
 /// Each file's LAST `token_count` event is the cumulative session
 /// total; earlier events hold running subtotals and are ignored.
+///
+/// Reuses `JSONLScanner` for mtime-keyed disk caching — completed
+/// rollout files have stable mtimes, so on warm starts only the
+/// currently-active sessions need re-parsing.
 struct CodexUsageService: Sendable {
     static let sessionDirs: [URL] = [
         FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".codex/sessions"),
         FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".codex/archived_sessions"),
     ]
 
-    func computeBreakdown() async -> UsageService.Breakdown {
-        await Task.detached(priority: .utility) {
-            Self.computeSynchronous()
-        }.value
+    private let scanner: JSONLScanner<UsageEntry>
+
+    init() {
+        self.scanner = JSONLScanner<UsageEntry>(
+            roots: Self.sessionDirs,
+            filter: { $0.lastPathComponent.hasPrefix("rollout-") },
+            cacheURL: Self.cacheURL
+        )
     }
 
-    // MARK: - Private
+    private static let cacheURL: URL? = {
+        guard let dir = try? FileManager.default.url(
+            for: .cachesDirectory, in: .userDomainMask, appropriateFor: nil, create: true
+        ) else { return nil }
+        return dir.appendingPathComponent("com.cli-buddy/codex-usage.plist")
+    }()
 
-    private static func computeSynchronous() -> UsageService.Breakdown {
+    func computeBreakdown() async -> UsageService.Breakdown {
+        let entries = await Task.detached(priority: .utility) { [scanner] in
+            await scanner.scan(parseFile: { url in
+                Self.reduceRolloutFile(at: url).map { [$0] } ?? []
+            })
+        }.value
+
         let startOfToday = Calendar.current.startOfDay(for: Date())
         let startOfWeek = Date(timeIntervalSinceNow: -7 * 24 * 3600)
-
         var today = UsageSummary()
         var week = UsageSummary()
         var all = UsageSummary()
-
-        let files = enumerateFiles()
-        logger.info("Scanning \(files.count) Codex rollout files")
-
-        for url in files {
-            guard let entry = reduceRolloutFile(at: url) else { continue }
+        for entry in entries {
             all.include(entry)
             if entry.timestamp >= startOfWeek { week.include(entry) }
             if entry.timestamp >= startOfToday { today.include(entry) }
         }
-
         return UsageService.Breakdown(today: today, week: week, all: all)
     }
 
-    static func enumerateFiles() -> [URL] {
-        var out: [URL] = []
-        for dir in sessionDirs {
-            guard FileManager.default.fileExists(atPath: dir.path) else { continue }
-            guard let en = FileManager.default.enumerator(
-                at: dir, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles]
-            ) else { continue }
-            for case let u as URL in en where u.lastPathComponent.hasPrefix("rollout-") {
-                out.append(u)
-            }
+    /// Mirrors `UsageService.prefetch` — kicks off the scan in the background
+    /// at app launch so the first ⌘U press doesn't pay a cold-scan tax.
+    func prefetch() {
+        Task.detached(priority: .background) { [scanner] in
+            _ = await scanner.scan(parseFile: { url in
+                Self.reduceRolloutFile(at: url).map { [$0] } ?? []
+            })
         }
-        return out
     }
 
     /// Streams a rollout file in 64KiB chunks, returns the LAST
@@ -98,8 +106,11 @@ struct CodexUsageService: Sendable {
             model: model,
             inputTokens: freshInput,
             outputTokens: output,
-            cacheWriteTokens: 0,
-            cacheReadTokens: cached
+            cacheWrite5mTokens: 0,
+            cacheWrite1hTokens: 0,
+            cacheReadTokens: cached,
+            speed: "standard",
+            dedupKey: nil
         )
     }
 

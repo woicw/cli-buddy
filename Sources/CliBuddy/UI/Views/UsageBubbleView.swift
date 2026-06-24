@@ -7,7 +7,10 @@ import SwiftUI
 struct UsageBubbleView: View {
     struct Data {
         let claude: UsageService.Breakdown
-        let codex: UsageService.Breakdown
+        /// `nil` while Codex is still being scanned. Cold scans of
+        /// `~/.codex/sessions` can take ~150s on a heavy user; rendering
+        /// Claude immediately means the bubble doesn't look frozen.
+        let codex: UsageService.Breakdown?
     }
 
     let data: Data?
@@ -20,7 +23,11 @@ struct UsageBubbleView: View {
                 if let d = data {
                     platformSection(title: "Claude Code", breakdown: d.claude)
                     divider().padding(.vertical, 2)
-                    platformSection(title: "Codex", breakdown: d.codex)
+                    if let codex = d.codex {
+                        platformSection(title: "Codex", breakdown: codex)
+                    } else {
+                        codexLoadingSection()
+                    }
 
                     divider().padding(.top, 2)
                     Text("API-equivalent cost — if you're on a subscription (Claude Pro / Max / Team, ChatGPT Plus / Codex), you already paid the flat fee and this number is only a usage indicator.")
@@ -50,6 +57,23 @@ struct UsageBubbleView: View {
                 }
             }
             .frame(width: 360)
+        }
+    }
+
+    @ViewBuilder
+    private func codexLoadingSection() -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Codex")
+                .font(.system(.footnote, design: .monospaced).weight(.semibold))
+                .foregroundStyle(.white.opacity(0.95))
+                .tracking(0.6)
+            HStack(spacing: 8) {
+                ProgressView().progressViewStyle(.circular).scaleEffect(0.55)
+                Text("scanning rollouts… (first run only)")
+                    .font(.caption.monospaced())
+                    .foregroundStyle(.white.opacity(0.45))
+            }
+            .padding(.vertical, 4)
         }
     }
 

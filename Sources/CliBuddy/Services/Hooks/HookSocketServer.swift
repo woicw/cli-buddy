@@ -303,37 +303,9 @@ final class HookSocketServer: @unchecked Sendable {
         }
     }
 
-    /// Check if there's a pending permission request for a session (sync shim for AppDelegate callers)
-    func hasPendingPermission(sessionId: String) -> Bool {
-        final class Box: @unchecked Sendable { var value = false }
-        let box = Box()
-        let sem = DispatchSemaphore(value: 0)
-        Task { [registry] in
-            box.value = await registry.hasPending(sessionId: sessionId)
-            sem.signal()
-        }
-        sem.wait()
-        return box.value
-    }
-
     /// Async version for test and Swift concurrency callers
     func hasPendingPermissionAsync(sessionId: String) async -> Bool {
         await registry.hasPending(sessionId: sessionId)
-    }
-
-    /// Get the pending permission details for a session (if any) — sync shim for AppDelegate callers
-    func getPendingPermission(sessionId: String) -> (toolName: String?, toolId: String?, toolInput: [String: AnyCodable]?)? {
-        final class Box: @unchecked Sendable { var value: (String?, String?, [String: AnyCodable]?)? }
-        let box = Box()
-        let sem = DispatchSemaphore(value: 0)
-        Task { [registry] in
-            if let p = await registry.peekPending(sessionId: sessionId) {
-                box.value = (p.event.tool, p.toolUseId, p.event.toolInput)
-            }
-            sem.signal()
-        }
-        sem.wait()
-        return box.value.map { ($0.0, $0.1, $0.2) }
     }
 
     /// Cancel a specific pending permission by toolUseId (when tool completes via terminal approval)

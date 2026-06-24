@@ -18,6 +18,12 @@ final class RoamingCoordinator {
     private var ticker: Timer?
     private var cancellables: Set<AnyCancellable> = []
 
+    /// True while the user has roaming turned on. Gates `ensureTicking()`
+    /// so a parked buddy (idle/sleep) can pause the 60fps timer and resume
+    /// on the next mode change — without un-pinning the buddy when roaming
+    /// is switched off in settings.
+    private var roamingEnabled = false
+
     /// Fires once when the buddy has just reached a summon target.
     var onSummonArrived: (() -> Void)?
 
@@ -68,14 +74,13 @@ final class RoamingCoordinator {
     }
 
     func start() {
+        roamingEnabled = true
         controller.startStroll()
-        ticker?.invalidate()
-        ticker = Timer.scheduledTimer(withTimeInterval: 1.0 / 60.0, repeats: true) { [weak self] _ in
-            Task { @MainActor in self?.tick() }
-        }
+        ensureTicking()
     }
 
     func stop() {
+        roamingEnabled = false
         ticker?.invalidate()
         ticker = nil
     }
@@ -86,6 +91,7 @@ final class RoamingCoordinator {
         let cursor = NSEvent.mouseLocation
         controller.summon(onScreenAt: cursor)
         summonHandled = false
+        ensureTicking()
     }
 
     /// Stop moving — used when a bubble is open so the buddy doesn't
@@ -97,6 +103,7 @@ final class RoamingCoordinator {
     /// Resume normal wandering.
     func resumeStroll() {
         controller.startStroll()
+        ensureTicking()
     }
 
     /// Align the controller's internal position to the window's actual
@@ -113,9 +120,21 @@ final class RoamingCoordinator {
     func celebrate(peakHeight: CGFloat = 30, duration: TimeInterval = 0.35) {
         logger.info("Celebrate bounce starting from origin \(self.window.frame.origin.debugDescription, privacy: .public)")
         controller.startCelebration(peakHeight: peakHeight, duration: duration)
+        ensureTicking()
     }
 
     // MARK: - Private
+
+    /// Start the 60fps ticker if roaming is on and it isn't already
+    /// running. The timer fires on the main run loop (this type is
+    /// `@MainActor`), so `tick()` runs synchronously via `assumeIsolated`
+    /// — no per-frame `Task` allocation.
+    private func ensureTicking() {
+        guard roamingEnabled, ticker == nil else { return }
+        ticker = Timer.scheduledTimer(withTimeInterval: 1.0 / 60.0, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.tick() }
+        }
+    }
 
     private func tick() {
         guard !isSuspended else { return }
@@ -126,6 +145,15 @@ final class RoamingCoordinator {
         if controller.mode == .summon, controller.reachedTarget, !summonHandled {
             summonHandled = true
             onSummonArrived?()
+        }
+
+        // Parked: nothing moves in .idle/.sleep, so pause the ticker
+        // instead of spinning at 60fps doing nothing. The entry points
+        // (start/resumeStroll/summonToCursor/celebrate) call ensureTicking()
+        // to spin it back up on the next mode change.
+        if controller.mode == .idle || controller.mode == .sleep {
+            ticker?.invalidate()
+            ticker = nil
         }
     }
 

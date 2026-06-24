@@ -52,6 +52,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         HookInstaller.installIfNeeded()
         CodexHookInstaller.installIfNeeded()
 
+        // Warm the usage caches off the main thread so the first ⌘U press
+        // doesn't pay the ~5s (Claude) + ~? (Codex) cold-scan cost on a
+        // fresh launch.
+        usageService.prefetch()
+        codexUsageService.prefetch()
+
         hookServer.start(
             onEvent: { [weak self] event in
                 // HookSocketServer fires onEvent from its private dispatch
@@ -432,16 +438,59 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         Task { @MainActor [weak self] in
             guard let self else { return }
-            async let claude = self.usageService.computeBreakdown()
+            // Kick off both scans in parallel, but render Claude as soon
+            // as it lands so the user gets feedback at the ~5s mark
+            // instead of waiting on the ~150s Codex cold scan.
+            async let claudePair = self.usageService.computeAll(dailyDays: 14)
             async let codex = self.codexUsageService.computeBreakdown()
-            let data = UsageBubbleView.Data(claude: await claude, codex: await codex)
-            let filled = UsageBubbleView(
-                data: data,
-                onRefresh: { [weak self] in self?.showUsageBubble() },
-                onClose: { [weak self] in self?.usageBubble?.orderOut(nil) }
-            )
-            self.usageBubble?.swap(rootView: filled)
+
+            let (claude, daily) = await claudePair
+            Self.logDaily(daily)
+            let onRefresh: () -> Void = { [weak self] in self?.showUsageBubble() }
+            let onClose: () -> Void = { [weak self] in self?.usageBubble?.orderOut(nil) }
+            self.usageBubble?.swap(rootView: UsageBubbleView(
+                data: .init(claude: claude, codex: nil),
+                onRefresh: onRefresh, onClose: onClose
+            ))
+
+            let codexBreakdown = await codex
+            self.usageBubble?.swap(rootView: UsageBubbleView(
+                data: .init(claude: claude, codex: codexBreakdown),
+                onRefresh: onRefresh, onClose: onClose
+            ))
         }
+    }
+
+    /// Dumps the deduped per-day claude usage to os_log. Tail with
+    /// `log stream --predicate 'subsystem == "com.cli-buddy"' --level info`.
+    private static func logDaily(_ rows: [UsageService.DailyRow]) {
+        guard !rows.isEmpty else {
+            logger.info("usage daily: no entries in window")
+            return
+        }
+        let df = DateFormatter()
+        df.dateFormat = "yyyy-MM-dd"
+        var lines = ["usage daily (deduped, last \(rows.count)d, newest first):"]
+        var total = 0.0
+        for row in rows {
+            let s = row.summary
+            let cacheTotal = s.cacheReadTokens + s.cacheWriteTokens
+            lines.append(String(
+                format: "  %@  $%7.2f  msgs=%4d  in=%@  out=%@  cache=%@",
+                df.string(from: row.day), s.cost, s.messageCount,
+                fmt(s.inputTokens), fmt(s.outputTokens), fmt(cacheTotal)
+            ))
+            total += s.cost
+        }
+        lines.append(String(format: "  ── total $%.2f over %d days", total, rows.count))
+        logger.info("\(lines.joined(separator: "\n"), privacy: .public)")
+    }
+
+    /// Compact integer formatter (12_345 → "12.3K", 1_234_567 → "1.2M").
+    private static func fmt(_ n: Int) -> String {
+        if n >= 1_000_000 { return String(format: "%.1fM", Double(n) / 1_000_000) }
+        if n >= 1_000     { return String(format: "%.1fK", Double(n) / 1_000) }
+        return String(n)
     }
 
     // MARK: - Session list bubble
